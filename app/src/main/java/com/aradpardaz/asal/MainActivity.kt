@@ -1,55 +1,181 @@
 package com.aradpardaz.asal
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipData
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
 import android.view.KeyEvent
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.webkit.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
+import java.text.SimpleDateFormat
 import java.util.*
 
 
 class MainActivity : AppCompatActivity() {
 
-    lateinit var myWebView: WebView
+    lateinit var webView: WebView
+    private val multiple_files = true // allowing multiple file upload
+
+    private var cam_file_data: String? = null // for storing camera file information
+    private var file_data // data/header received after file selection
+            : ValueCallback<Uri?>? = null
+    private var file_path // received file(s) temp. location
+            : ValueCallback<Array<Uri>>? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        myWebView = findViewById(R.id.webView)
-        myWebView.settings.javaScriptEnabled = true
-        myWebView.settings.domStorageEnabled =true
-
-
-//        myWebView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 8.1.0; Android SDK built for x86 Build/OSM1.180201.031; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/69.0.3497.100 Mobile Safari/537.36 AsalApp"
-        myWebView.loadUrl("https://www.asal.ir/")
+        webView = findViewById(R.id.webView)
+        webView.settings.javaScriptEnabled = true
+        webView.settings.domStorageEnabled = true
+        webView.settings.allowFileAccess = true
+        webView.loadUrl("https://www.asal.ir/")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            myWebView.webViewClient = object : WebViewClient() {
+            webView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
                 ): Boolean {
                     return processUrl(request.url.toString(), view)
                 }
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                }
             }
+
         } else {
-            myWebView.webViewClient = object : WebViewClient() {
+            webView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
                     return processUrl(url!!, view!!)
                 }
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                }
             }
         }
-        myWebView.webChromeClient = WebChromeClient()
+
+        webView.webChromeClient = object : WebChromeClient() {
+
+            override fun onShowFileChooser(
+                webView: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                return if (file_permission() && Build.VERSION.SDK_INT >= 21) {
+                    file_path = filePathCallback
+                    var takePictureIntent: Intent? = null
+                    var takeVideoIntent: Intent? = null
+                    var includeVideo = false
+                    var includePhoto = false
+
+                    /*-- checking the accept parameter to determine which intent(s) to include --*/paramCheck@ for (acceptTypes in fileChooserParams.acceptTypes) {
+                        val splitTypes = acceptTypes.split(", ?+")
+                            .toTypedArray() // although it's an array, it still seems to be the whole value; split it out into chunks so that we can detect multiple values
+                        for (acceptType in splitTypes) {
+                            when (acceptType) {
+                                "*/*" -> {
+                                    includePhoto = true
+                                    includeVideo = true
+                                    break@paramCheck
+                                }
+                                "image/*" -> includePhoto = true
+                                "video/*" -> includeVideo = true
+                            }
+                        }
+                    }
+                    if (fileChooserParams.acceptTypes.size == 0) {   //no `accept` parameter was specified, allow both photo and video
+                        includePhoto = true
+                        includeVideo = true
+                    }
+                    if (includePhoto) {
+                        takePictureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                        if (takePictureIntent.resolveActivity(this@MainActivity.packageManager) != null) {
+                            var photoFile: File? = null
+                            try {
+                                photoFile = create_image()
+                                takePictureIntent.putExtra("PhotoPath", cam_file_data)
+                            } catch (ex: IOException) {
+                                Log.e(TAG, "Image file creation failed", ex)
+                            }
+                            if (photoFile != null) {
+                                cam_file_data = "file:" + photoFile.absolutePath
+                                takePictureIntent.putExtra(
+                                    MediaStore.EXTRA_OUTPUT,
+                                    Uri.fromFile(photoFile)
+                                )
+                            } else {
+                                cam_file_data = null
+                                takePictureIntent = null
+                            }
+                        }
+                    }
+                    if (includeVideo) {
+                        takeVideoIntent = Intent(MediaStore.ACTION_VIDEO_CAPTURE)
+                        if (takeVideoIntent.resolveActivity(this@MainActivity.packageManager) != null) {
+                            var videoFile: File? = null
+                            try {
+                                videoFile = create_video()
+                            } catch (ex: IOException) {
+                                Log.e(TAG, "Video file creation failed", ex)
+                            }
+                            if (videoFile != null) {
+                                cam_file_data = "file:" + videoFile.absolutePath
+                                takeVideoIntent.putExtra(
+                                    MediaStore.EXTRA_OUTPUT,
+                                    Uri.fromFile(videoFile)
+                                )
+                            } else {
+                                cam_file_data = null
+                                takeVideoIntent = null
+                            }
+                        }
+                    }
+                    val contentSelectionIntent = Intent(Intent.ACTION_GET_CONTENT)
+                    contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE)
+                    contentSelectionIntent.type = MainActivity.file_type
+                    if (multiple_files) {
+                        contentSelectionIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
+                    val intentArray: Array<Intent?>
+                    intentArray = if (takePictureIntent != null && takeVideoIntent != null) {
+                        arrayOf(takePictureIntent, takeVideoIntent)
+                    } else takePictureIntent?.let { arrayOf(it) }
+                        ?: (takeVideoIntent?.let { arrayOf(it) } ?: arrayOfNulls(0))
+                    val chooserIntent = Intent(Intent.ACTION_CHOOSER)
+                    chooserIntent.putExtra(Intent.EXTRA_INTENT, contentSelectionIntent)
+                    chooserIntent.putExtra(Intent.EXTRA_TITLE, "File chooser")
+                    chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, intentArray)
+                    startActivityForResult(chooserIntent, MainActivity.file_req_code)
+                    true
+                } else {
+                    false
+                }
+            }
+        }
     }
 
-    private fun processUrl(url: String, view: WebView) : Boolean{
+    private fun processUrl(url: String, view: WebView): Boolean {
         return if (url.startsWith("tel")) {
             openPhoneIntent(url)
             true
@@ -67,12 +193,133 @@ class MainActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         // Check if the key event was the Back button and if there's history
-        if (keyCode == KeyEvent.KEYCODE_BACK && myWebView.canGoBack()) {
-            myWebView.goBack()
+        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
+            webView.goBack()
             return true
         }
         // If it wasn't the Back key or there's no web page history, bubble up to the default
         // system behavior (probably exit the activity)
         return super.onKeyDown(keyCode, event)
     }
+
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, intent: Intent?) {
+        super.onActivityResult(requestCode, resultCode, intent)
+        if (Build.VERSION.SDK_INT >= 21) {
+            var results: Array<Uri>? = null
+
+            /*-- if file request cancelled; exited camera. we need to send null value to make future attempts workable --*/if (resultCode == RESULT_CANCELED) {
+                file_path!!.onReceiveValue(null)
+                return
+            }
+
+            /*-- continue if response is positive --*/if (resultCode == RESULT_OK) {
+                if (null == file_path) {
+                    return
+                }
+                var clipData: ClipData?
+                var stringData: String?
+                try {
+                    clipData = intent!!.clipData
+                    stringData = intent.dataString
+                } catch (e: Exception) {
+                    clipData = null
+                    stringData = null
+                }
+                if (clipData == null && stringData == null && cam_file_data != null) {
+                    results = arrayOf(Uri.parse(cam_file_data))
+                } else {
+                    if (clipData != null) { // checking if multiple files selected or not
+                        val numSelectedFiles = clipData.itemCount
+                        results = emptyArray()
+                        for (i in 0 until clipData.itemCount) {
+                            results[i] = clipData.getItemAt(i).uri
+                        }
+                    } else {
+                        try {
+                            val cam_photo = intent!!.extras!!["data"] as Bitmap?
+                            val bytes = ByteArrayOutputStream()
+                            cam_photo!!.compress(Bitmap.CompressFormat.JPEG, 100, bytes)
+                            stringData = MediaStore.Images.Media.insertImage(
+                                this.contentResolver,
+                                cam_photo,
+                                null,
+                                null
+                            )
+                        } catch (ignored: Exception) {
+                        }
+                        /* checking extra data
+                            Bundle bundle = intent.getExtras();
+                            if (bundle != null) {
+                                for (String key : bundle.keySet()) {
+                                    Log.w("ExtraData", key + " : " + (bundle.get(key) != null ? bundle.get(key) : "NULL"));
+                                }
+                            }*/results = arrayOf(Uri.parse(stringData))
+                    }
+                }
+            }
+            file_path!!.onReceiveValue(results)
+            file_path = null
+        } else {
+            if (requestCode == MainActivity.file_req_code) {
+                if (null == file_data) return
+                val result = if (intent == null || resultCode != RESULT_OK) null else intent.data
+                file_data!!.onReceiveValue(result)
+                file_data = null
+            }
+        }
+    }
+
+    fun file_permission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 23 && (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) != PackageManager.PERMISSION_GRANTED)
+        ) {
+            ActivityCompat.requestPermissions(
+                this@MainActivity,
+                arrayOf(
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    Manifest.permission.CAMERA
+                ),
+                1
+            )
+            false
+        } else {
+            true
+        }
+    }
+
+    /*-- creating new image file here --*/
+    @Throws(IOException::class)
+    private fun create_image(): File {
+        @SuppressLint("SimpleDateFormat") val timeStamp =
+            SimpleDateFormat("yyyyMMdd_HHmmss").format(
+                Date()
+            )
+        val imageFileName = "img_" + timeStamp + "_"
+        val storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+        return File.createTempFile(imageFileName, ".jpg", storageDir)
+    }
+
+    /*-- creating new video file here --*/
+    @Throws(IOException::class)
+    private fun create_video(): File {
+        @SuppressLint("SimpleDateFormat") val file_name = SimpleDateFormat("yyyy_mm_ss").format(
+            Date()
+        )
+        val new_name = "file_" + file_name + "_"
+        val sd_directory = getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+        return File.createTempFile(new_name, ".3gp", sd_directory)
+    }
+
+    companion object {
+        private const val file_type = "*/*" // file types to be allowed for upload
+        private val TAG = MainActivity::class.java.simpleName
+        private const val file_req_code = 1
+    }
 }
+
