@@ -1,4 +1,4 @@
-package com.aradpardaz.asal
+package com.aradpardaz.asalna
 
 import org.junit.Test
 

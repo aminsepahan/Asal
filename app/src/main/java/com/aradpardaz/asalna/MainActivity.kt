@@ -1,4 +1,4 @@
-package com.aradpardaz.asal
+package com.aradpardaz.asalna
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -43,7 +43,7 @@ class MainActivity : AppCompatActivity() {
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
-        webView.loadUrl("https://www.asal.ir/")
+        webView.loadUrl("https://www.asalna.ir/")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             webView.webViewClient = object : WebViewClient() {
